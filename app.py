@@ -1,33 +1,24 @@
 import os
 import time
 import requests
-import sys
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # =========================
-# Config
+# Config (ENV VARS)
 # =========================
-TELEGRAM_BOT_TOKEN = os.getenv("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A")
-TELEGRAM_GROUP_ID = os.getenv("-1003587001321")
-TRIGGER_SECRET = os.getenv("shalmanimPoker2026")
-ADMIN_USER_ID = int(os.environ.get("841949601", "0") or "0")
-
-TOKEN = os.environ.get("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A", "").strip()
+TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 if not TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}"
 
-# הגנה לטריגרים (GitHub Actions / Cron)
-TRIGGER_SECRET = os.environ.get("shalmanimPoker2026", "").strip()
+GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", "0") or "0")         # לדוגמה: -1003587001321
+TRIGGER_SECRET = (os.getenv("TRIGGER_SECRET") or "").strip()       # לדוגמה: shalmanimPoker2026
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or "0")        # אופציונלי
 
-# אם יש לך קבוצה קבועה שאתה רוצה לעבוד איתה, שים פה את ה-ID שלה (מספר שלילי)
-GROUP_ID = int(os.environ.get("-1003587001321", "0"))
-#ADMIN_USER_ID = int(os.environ.get("841949601", "0") or "0")
-
-# רשימת הימים (לפי מה שביקשת: רביעי מושב + רביעי אביב)
+# רשימת הימים (כמו שביקשת)
 DAY_OPTIONS = [
     "ראשון",
     "שני",
@@ -40,9 +31,10 @@ DAY_OPTIONS = [
 ]
 
 # =========================
-# In-memory "DB" (Render Free resets on restart)
+# In-memory "DB" (ללא DB / ללא דיסק)
+# Render Free יתאפס בריסטארט
 # =========================
-HOSTS = {}  # user_id -> {"username": str, "first_name": str, "days": set(str), "added_at": int}
+HOSTS = {}    # user_id -> {"username": str, "first_name": str, "days": set(str), "added_at": int}
 PENDING = {}  # user_id -> {"days": set(str)}
 
 # =========================
@@ -55,10 +47,9 @@ def tg_send_message(chat_id: int, text: str, reply_markup=None):
     return requests.post(f"{API_URL}/sendMessage", json=payload, timeout=20)
 
 def tg_answer_callback_query(callback_query_id: str, text: str = "", show_alert: bool = False):
-    payload = {"callback_query_id": callback_query_id}
+    payload = {"callback_query_id": callback_query_id, "show_alert": show_alert}
     if text:
         payload["text"] = text
-    payload["show_alert"] = show_alert
     return requests.post(f"{API_URL}/answerCallbackQuery", json=payload, timeout=20)
 
 def tg_edit_message(chat_id: int, message_id: int, text: str, reply_markup=None):
@@ -68,37 +59,31 @@ def tg_edit_message(chat_id: int, message_id: int, text: str, reply_markup=None)
     return requests.post(f"{API_URL}/editMessageText", json=payload, timeout=20)
 
 def build_days_keyboard(selected_days: set):
-    # Toggle buttons + "סיימתי"
     rows = []
     for day in DAY_OPTIONS:
         is_on = day in selected_days
         label = f"✅ {day}" if is_on else f"⬜ {day}"
-        rows.append([{
-            "text": label,
-            "callback_data": f"hostday|toggle|{day}"
-        }])
-    rows.append([{
-        "text": "✅ סיימתי",
-        "callback_data": "hostday|done"
-    }])
+        rows.append([{"text": label, "callback_data": f"hostday|toggle|{day}"}])
+    rows.append([{"text": "✅ סיימתי", "callback_data": "hostday|done"}])
     return {"inline_keyboard": rows}
 
 def normalize_username(u: str):
-    if not u:
-        return ""
-    return u.strip().lstrip("@")
+    return (u or "").strip().lstrip("@")
 
 # =========================
 # Core logic
 # =========================
 def handle_addhost_private(msg):
-    user = msg.get("from", {}) or {}
-    chat = msg.get("chat", {}) or {}
+    user = msg.get("from") or {}
+    chat = msg.get("chat") or {}
     chat_id = chat.get("id")
 
     user_id = user.get("id")
-    username = normalize_username(user.get("username", ""))
-    first_name = user.get("first_name", "")
+    username = normalize_username(user.get("username"))
+    first_name = user.get("first_name") or ""
+
+    if not user_id or not chat_id:
+        return
 
     # רישום בסיסי בזיכרון
     if user_id not in HOSTS:
@@ -108,13 +93,17 @@ def handle_addhost_private(msg):
             "days": set(),
             "added_at": int(time.time()),
         }
+    else:
+        # עדכון שם/יוזר אם השתנה
+        HOSTS[user_id]["username"] = username
+        HOSTS[user_id]["first_name"] = first_name
 
-    # פותחים תהליך בחירת ימים
+    # פתיחת תהליך בחירת ימים
     PENDING[user_id] = {"days": set(HOSTS[user_id]["days"])}
 
     text = (
-        "מעולה! נרשמת כמארח.\n\n"
-        "בחר ימים שנוחים לך לארח (אפשר לבחור כמה). ואז לחץ ✅ סיימתי."
+        "מעולה! נרשמת כמארח ✅\n\n"
+        "בחר ימים שנוחים לך לארח (אפשר לבחור כמה), ואז לחץ ✅ סיימתי."
     )
     keyboard = build_days_keyboard(PENDING[user_id]["days"])
     tg_send_message(chat_id, text, reply_markup=keyboard)
@@ -124,12 +113,11 @@ def handle_message(update):
     if not msg:
         return
 
-    chat = msg.get("chat", {}) or {}
+    chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     chat_type = chat.get("type", "")
     text = (msg.get("text") or "").strip()
 
-    # DEBUG
     print("MESSAGE:", {"chat_id": chat_id, "type": chat_type, "text": text})
 
     # /addhost רק בפרטי
@@ -137,12 +125,12 @@ def handle_message(update):
         handle_addhost_private(msg)
         return
 
-    # דוגמה: פינג בקבוצה בלבד
+    # פינג בקבוצה
     if text == "/ping" and chat_type in ("group", "supergroup"):
         tg_send_message(chat_id, "🏓 pong (קבוצה)")
         return
 
-    # ברירת מחדל
+    # ברירת מחדל בפרטי
     if chat_type == "private" and text:
         tg_send_message(chat_id, "קיבלתי ✅\nרשום /addhost כדי להירשם כמארח.")
 
@@ -151,24 +139,19 @@ def handle_callback(update):
     cb_id = cb.get("id")
     data = (cb.get("data") or "").strip()
     msg = cb.get("message") or {}
-    chat = msg.get("chat", {}) or {}
+    chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     message_id = msg.get("message_id")
-    from_user = cb.get("from", {}) or {}
+    from_user = cb.get("from") or {}
     user_id = from_user.get("id")
 
-    # DEBUG
     print("CALLBACK:", {"user_id": user_id, "data": data})
 
-    if not cb_id or not data:
+    if not cb_id or not data or not user_id or not chat_id or not message_id:
         return
 
     parts = data.split("|")
-    if len(parts) < 2:
-        tg_answer_callback_query(cb_id)
-        return
-
-    if parts[0] != "hostday":
+    if len(parts) < 2 or parts[0] != "hostday":
         tg_answer_callback_query(cb_id)
         return
 
@@ -184,22 +167,18 @@ def handle_callback(update):
             PENDING[user_id]["days"].add(day)
 
         keyboard = build_days_keyboard(PENDING[user_id]["days"])
-        text = (
-            "בחר ימים שנוחים לך לארח (אפשר לבחור כמה).\n"
-            "בסוף לחץ ✅ סיימתי."
-        )
+        text = "בחר ימים שנוחים לך לארח (אפשר לבחור כמה).\nבסוף לחץ ✅ סיימתי."
         tg_edit_message(chat_id, message_id, text, reply_markup=keyboard)
         tg_answer_callback_query(cb_id)
         return
 
     if parts[1] == "done":
         chosen = PENDING[user_id]["days"]
-        # שמירה ל-hosts
+
         if user_id not in HOSTS:
             HOSTS[user_id] = {"username": "", "first_name": "", "days": set(), "added_at": int(time.time())}
         HOSTS[user_id]["days"] = set(chosen)
 
-        # סגירת pending
         PENDING.pop(user_id, None)
 
         summary = "אין ימים שנבחרו" if not chosen else "הימים שנבחרו:\n- " + "\n- ".join(sorted(chosen))
@@ -221,16 +200,14 @@ def webhook():
     update = request.get_json(force=True, silent=True) or {}
     print("UPDATE:", update)
 
-    # handle callback clicks
     if "callback_query" in update:
         handle_callback(update)
         return "OK", 200
 
-    # handle messages
     handle_message(update)
     return "OK", 200
 
-# טריגרים מה־GitHub Actions (ללא DB)
+# טריגרים מה־GitHub Actions / Cron
 @app.post("/trigger/<action>")
 def trigger(action: str):
     if not TRIGGER_SECRET:
@@ -244,12 +221,9 @@ def trigger(action: str):
     if action not in ("ask_ws", "ask_su", "poll_ws", "poll_su"):
         return jsonify({"ok": False, "error": "unknown action"}), 400
 
-    # כרגע רק דוגמה — פה תשים את הלוגיקה שלך
-    # לדוגמה: לשלוח לכל המארחים בפרטי כפתורי ימים / או לפרסם סקר בקבוצה וכו'
     print("TRIGGER ACTION:", action)
-
     return jsonify({"ok": True, "action": action}), 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "10000"))
+    port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
