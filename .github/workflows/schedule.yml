@@ -2,10 +2,24 @@ name: Schedule Poker Bot
 
 on:
   schedule:
+    # Ask hosts:
+    # Sat 20:00 Israel (UTC+2 winter) = 18:00 UTC -> ask WS
     - cron: "0 18 * * SAT"
+    # Tue 20:00 Israel = 18:00 UTC -> ask SU
     - cron: "0 18 * * TUE"
+
+    # Post poll:
+    # Sat 22:00 Israel = 20:00 UTC -> poll WS
     - cron: "0 20 * * SAT"
+    # Tue 22:00 Israel = 20:00 UTC -> poll SU
     - cron: "0 20 * * TUE"
+
+    # Auto summary:
+    # Sat 23:00 Israel = 21:00 UTC
+    - cron: "0 21 * * SAT"
+    # Tue 23:00 Israel = 21:00 UTC
+    - cron: "0 21 * * TUE"
+
   workflow_dispatch:
 
 jobs:
@@ -36,6 +50,11 @@ jobs:
             curl -sS -X POST "$BASE_URL/trigger/poll/WS" -H "X-Trigger-Token: $sig" -d "{}"
           elif [ "$sch" = "0 20 * * TUE" ]; then
             curl -sS -X POST "$BASE_URL/trigger/poll/SU" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "$sch" = "0 21 * * SAT" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/summary" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "$sch" = "0 21 * * TUE" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/summary" -H "X-Trigger-Token: $sig" -d "{}"
           else
+            # Manual run default (Run workflow):
             curl -sS -X POST "$BASE_URL/trigger/ask/WS" -H "X-Trigger-Token: $sig" -d "{}"
           fi
