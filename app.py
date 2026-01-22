@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+import sys
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -8,6 +9,11 @@ app = Flask(__name__)
 # =========================
 # Config
 # =========================
+TELEGRAM_BOT_TOKEN = os.getenv("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A")
+TELEGRAM_GROUP_ID = os.getenv("-1003587001321")
+TRIGGER_SECRET = os.getenv("shalmanimPoker2026")
+ADMIN_USER_ID = int(os.environ.get("841949601", "0") or "0")
+
 TOKEN = os.environ.get("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A", "").strip()
 if not TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
