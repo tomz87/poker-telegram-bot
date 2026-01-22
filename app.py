@@ -5,6 +5,7 @@ import hashlib
 import requests
 from flask import Flask, request, jsonify
 
+HOSTS = set()  # זיכרון זמני למארחים
 app = Flask(__name__)
 
 # ========= ENV (Render -> Environment Variables) =========
@@ -208,6 +209,19 @@ def webhook():
             return "OK", 200
 
         return "OK", 200
+    # פקודת addhost בפרטי
+    if text.startswith("/addhost") and update["message"]["chat"]["type"] == "private":
+        HOSTS.add(chat_id)
+    
+        requests.post(
+            f"{API_URL}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": "✅ נרשמת כמארח!\nכשתיפתח בקשת זמינות – אשלח לך כפתורים לבחירת ימים."
+            }
+        )
+        print("HOSTS:", HOSTS)
+    return "OK", 200
 
     # 3) Text messages
     if "message" in update and "text" in update["message"]:
