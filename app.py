@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # =========================
-# Config (ENV VARS)---
+# ENV Config
 # =========================
 TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 if not TOKEN:
@@ -18,7 +18,6 @@ GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", "0") or "0")         # לדוגמ�
 TRIGGER_SECRET = (os.getenv("TRIGGER_SECRET") or "").strip()       # לדוגמה: shalmanimPoker2026
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0") or "0")        # אופציונלי
 
-# רשימת הימים (כמו שביקשת)
 DAY_OPTIONS = [
     "ראשון",
     "שני",
@@ -31,14 +30,14 @@ DAY_OPTIONS = [
 ]
 
 # =========================
-# In-memory "DB" (ללא DB / ללא דיסק)
+# In-memory storage (ללא DB)
 # Render Free יתאפס בריסטארט
 # =========================
 HOSTS = {}    # user_id -> {"username": str, "first_name": str, "days": set(str), "added_at": int}
 PENDING = {}  # user_id -> {"days": set(str)}
 
 # =========================
-# Helpers: Telegram
+# Telegram helpers
 # =========================
 def tg_send_message(chat_id: int, text: str, reply_markup=None):
     payload = {"chat_id": chat_id, "text": text}
@@ -71,21 +70,21 @@ def normalize_username(u: str):
     return (u or "").strip().lstrip("@")
 
 # =========================
-# Core logic
+# Core flows
 # =========================
 def handle_addhost_private(msg):
     user = msg.get("from") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
-
     user_id = user.get("id")
+
+    if not chat_id or not user_id:
+        return
+
     username = normalize_username(user.get("username"))
     first_name = user.get("first_name") or ""
 
-    if not user_id or not chat_id:
-        return
-
-    # רישום בסיסי בזיכרון
+    # רישום בסיסי
     if user_id not in HOSTS:
         HOSTS[user_id] = {
             "username": username,
@@ -94,7 +93,6 @@ def handle_addhost_private(msg):
             "added_at": int(time.time()),
         }
     else:
-        # עדכון שם/יוזר אם השתנה
         HOSTS[user_id]["username"] = username
         HOSTS[user_id]["first_name"] = first_name
 
@@ -115,10 +113,16 @@ def handle_message(update):
 
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
-    chat_type = chat.get("type", "")
+    chat_type = (chat.get("type") or "").strip()
+
+    # ✅ תמיד נגדיר text בצורה בטוחה
     text = (msg.get("text") or "").strip()
 
     print("MESSAGE:", {"chat_id": chat_id, "type": chat_type, "text": text})
+
+    # אם אין טקסט בכלל (סטיקר/תמונה/Join/וכו') — לא נופלים
+    if not text:
+        return
 
     # /addhost רק בפרטי
     if text.startswith("/addhost") and chat_type == "private":
@@ -131,17 +135,19 @@ def handle_message(update):
         return
 
     # ברירת מחדל בפרטי
-    if chat_type == "private" and text:
+    if chat_type == "private":
         tg_send_message(chat_id, "קיבלתי ✅\nרשום /addhost כדי להירשם כמארח.")
 
 def handle_callback(update):
     cb = update.get("callback_query") or {}
     cb_id = cb.get("id")
     data = (cb.get("data") or "").strip()
+
     msg = cb.get("message") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     message_id = msg.get("message_id")
+
     from_user = cb.get("from") or {}
     user_id = from_user.get("id")
 
@@ -155,7 +161,6 @@ def handle_callback(update):
         tg_answer_callback_query(cb_id)
         return
 
-    # ודא שיש pending
     if user_id not in PENDING:
         PENDING[user_id] = {"days": set(HOSTS.get(user_id, {}).get("days", set()))}
 
@@ -167,7 +172,7 @@ def handle_callback(update):
             PENDING[user_id]["days"].add(day)
 
         keyboard = build_days_keyboard(PENDING[user_id]["days"])
-        text = "בחר ימים שנוחים לך לארח (אפשר לבחור כמה).\nבסוף לחץ ✅ סיימתי."
+        text = "בחר ימים שנוחים לך לארח (אפשר לבחור כמה), ואז לחץ ✅ סיימתי."
         tg_edit_message(chat_id, message_id, text, reply_markup=keyboard)
         tg_answer_callback_query(cb_id)
         return
@@ -200,14 +205,19 @@ def webhook():
     update = request.get_json(force=True, silent=True) or {}
     print("UPDATE:", update)
 
-    if "callback_query" in update:
-        handle_callback(update)
+    try:
+        if "callback_query" in update:
+            handle_callback(update)
+            return "OK", 200
+
+        handle_message(update)
         return "OK", 200
 
-    handle_message(update)
-    return "OK", 200
+    except Exception as e:
+        # לא להפיל את השרת בגלל עדכון “חריג”
+        print("WEBHOOK ERROR:", repr(e))
+        return "OK", 200
 
-# טריגרים מה־GitHub Actions / Cron
 @app.post("/trigger/<action>")
 def trigger(action: str):
     if not TRIGGER_SECRET:
