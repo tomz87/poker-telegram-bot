@@ -1,0 +1,47 @@
+name: Schedule Poker Bot
+
+on:
+  schedule:
+    # Israel winter UTC+2:
+    # Sat 20:00 IL = 18:00 UTC -> ask WS hosts
+    - cron: "0 18 * * SAT"
+    # Tue 20:00 IL = 18:00 UTC -> ask SU hosts
+    - cron: "0 18 * * TUE"
+    # Sat 22:00 IL = 20:00 UTC -> post WS poll
+    - cron: "0 20 * * SAT"
+    # Tue 22:00 IL = 20:00 UTC -> post SU poll
+    - cron: "0 20 * * TUE"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call bot triggers
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          SECRET: ${{ secrets.TRIGGER_SECRET }}
+        run: |
+          body="{}"
+          sig=$(python - << 'PY'
+import os, hmac, hashlib
+secret=os.environ["SECRET"].encode()
+body=b"{}"
+print(hmac.new(secret, body, hashlib.sha256).hexdigest())
+PY
+          )
+
+          sch="${{ github.event.schedule }}"
+
+          if [ "$sch" = "0 18 * * SAT" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/ask/WS" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "$sch" = "0 18 * * TUE" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/ask/SU" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "$sch" = "0 20 * * SAT" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/poll/WS" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "$sch" = "0 20 * * TUE" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/poll/SU" -H "X-Trigger-Token: $sig" -d "{}"
+          else
+            # Manual run (Run workflow) default:
+            curl -sS -X POST "$BASE_URL/trigger/ask/WS" -H "X-Trigger-Token: $sig" -d "{}"
+          fi
