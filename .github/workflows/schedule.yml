@@ -1,0 +1,41 @@
+name: Schedule Poker Bot
+
+on:
+  schedule:
+    # ישראל בחורף = UTC+2.
+    # מוצ"ש 20:00 ישראל = 18:00 UTC
+    - cron: "0 18 * * SAT"
+    # שלישי 20:00 ישראל = 18:00 UTC
+    - cron: "0 18 * * TUE"
+    # מוצ"ש 22:00 ישראל = 20:00 UTC -> לפרסם סקר WS
+    - cron: "0 20 * * SAT"
+    # שלישי 22:00 ישראל = 20:00 UTC -> לפרסם סקר SU
+    - cron: "0 20 * * TUE"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call bot triggers
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          SECRET: ${{ secrets.TRIGGER_SECRET }}
+        run: |
+          body="{}"
+          sig=$(python - << 'PY'
+import os, hmac, hashlib
+secret=os.environ["SECRET"].encode()
+body=b"{}"
+print(hmac.new(secret, body, hashlib.sha256).hexdigest())
+PY
+          )
+
+          if [ "${{ github.event.schedule }}" = "0 18 * * SAT" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/ask/WS" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "${{ github.event.schedule }}" = "0 18 * * TUE" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/ask/SU" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "${{ github.event.schedule }}" = "0 20 * * SAT" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/poll/WS" -H "X-Trigger-Token: $sig" -d "{}"
+          elif [ "${{ github.event.schedule }}" = "0 20 * * TUE" ]; then
+            curl -sS -X POST "$BASE_URL/trigger/poll/SU" -H "X-Trigger-Token: $sig" -d "{}"
+          fi
