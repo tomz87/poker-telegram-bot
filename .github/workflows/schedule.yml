@@ -2,59 +2,44 @@ name: Schedule Poker Bot
 
 on:
   schedule:
-    # Ask hosts:
-    # Sat 20:00 Israel (UTC+2 winter) = 18:00 UTC -> ask WS
-    - cron: "0 18 * * SAT"
-    # Tue 20:00 Israel = 18:00 UTC -> ask SU
-    - cron: "0 18 * * TUE"
-
-    # Post poll:
-    # Sat 22:00 Israel = 20:00 UTC -> poll WS
-    - cron: "0 20 * * SAT"
-    # Tue 22:00 Israel = 20:00 UTC -> poll SU
-    - cron: "0 20 * * TUE"
-
-    # Auto summary:
-    # Sat 23:00 Israel = 21:00 UTC
-    - cron: "0 21 * * SAT"
-    # Tue 23:00 Israel = 21:00 UTC
-    - cron: "0 21 * * TUE"
-
+    # Israel winter UTC+2:
+    # Sat 20:00 IL => 18:00 UTC
+    - cron: "0 18 * * SAT"  # ask_ws
+    # Tue 20:00 IL => 18:00 UTC
+    - cron: "0 18 * * TUE"  # ask_su
+    # Sat 22:00 IL => 20:00 UTC
+    - cron: "0 20 * * SAT"  # poll_ws
+    # Tue 22:00 IL => 20:00 UTC
+    - cron: "0 20 * * TUE"  # poll_su
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Call bot triggers
+      - name: Call Render trigger
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
           SECRET: ${{ secrets.TRIGGER_SECRET }}
+          SCH: ${{ github.event.schedule }}
         run: |
-          body="{}"
-          sig=$(python - << 'PY'
-          import os, hmac, hashlib
-          secret=os.environ["shalmanimPoker2026"].encode()
-          body=b"{}"
-          print(hmac.new(secret, body, hashlib.sha256).hexdigest())
-          PY
-          )
+          echo "schedule=$SCH"
 
-          sch="${{ github.event.schedule }}"
-
-          if [ "$sch" = "0 18 * * SAT" ]; then
-            curl -sS -X POST "$BASE_URL/trigger/ask/WS" -H "X-Trigger-Token: $sig" -d "{}"
-          elif [ "$sch" = "0 18 * * TUE" ]; then
-            curl -sS -X POST "$BASE_URL/trigger/ask/SU" -H "X-Trigger-Token: $sig" -d "{}"
-          elif [ "$sch" = "0 20 * * SAT" ]; then
-            curl -sS -X POST "$BASE_URL/trigger/poll/WS" -H "X-Trigger-Token: $sig" -d "{}"
-          elif [ "$sch" = "0 20 * * TUE" ]; then
-            curl -sS -X POST "$BASE_URL/trigger/poll/SU" -H "X-Trigger-Token: $sig" -d "{}"
-          elif [ "$sch" = "0 21 * * SAT" ]; then
-            curl -sS -X POST "$BASE_URL/trigger/summary" -H "X-Trigger-Token: $sig" -d "{}"
-          elif [ "$sch" = "0 21 * * TUE" ]; then
-            curl -sS -X POST "$BASE_URL/trigger/summary" -H "X-Trigger-Token: $sig" -d "{}"
+          if [ "$SCH" = "0 18 * * SAT" ]; then
+            ACTION="ask_ws"
+          elif [ "$SCH" = "0 18 * * TUE" ]; then
+            ACTION="ask_su"
+          elif [ "$SCH" = "0 20 * * SAT" ]; then
+            ACTION="poll_ws"
+          elif [ "$SCH" = "0 20 * * TUE" ]; then
+            ACTION="poll_su"
           else
-            # Manual run default (Run workflow):
-            curl -sS -X POST "$BASE_URL/trigger/ask/WS" -H "X-Trigger-Token: $sig" -d "{}"
+            # workflow_dispatch או משהו אחר
+            ACTION="ask_ws"
           fi
+
+          echo "Calling: $BASE_URL/trigger/$ACTION"
+          curl -sS -X POST "$BASE_URL/trigger/$ACTION" \
+            -H "X-Trigger-Token: $SECRET" \
+            -H "Content-Type: application/json" \
+            -d "{}"
