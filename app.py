@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # =========================
-# Config (ENV VARS)
+# Config (ENV VARS)---
 # =========================
 TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 if not TOKEN:
