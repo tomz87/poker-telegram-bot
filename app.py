@@ -8,8 +8,8 @@ from flask import Flask, request, abort
 app = Flask(__name__)
 
 # ===== ENV =====
-TOKEN = os.environ.get("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A", "")
-API_URL = f"https://api.telegram.org/bot{8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A}"
+TOKEN = str(os.environ.get("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A", "")).strip()
+API_URL = "https://api.telegram.org/bot" + TOKEN
 GROUP_ID = int(os.environ.get("-1003587001321", "0"))
 ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
 TRIGGER_SECRET = os.environ.get("TRIGGER_SECRET", "")  # random long string
