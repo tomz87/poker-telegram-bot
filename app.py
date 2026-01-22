@@ -22,6 +22,14 @@ def webhook():
         chat_id = update["message"]["chat"]["id"]
         text = update["message"]["text"]
         is_group = (chat_id == GROUP_ID)
+        # /whoami - returns your telegram user id (works in private)
+        if text == "/whoami":
+            user_id = update["message"]["from"]["id"]
+            requests.post(
+                f"{API_URL}/sendMessage",
+                json={"chat_id": chat_id, "text": f"user_id שלך: {user_id}"},
+            )
+
 
 
         # תגובת בדיקה
