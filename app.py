@@ -3,262 +3,191 @@ import time
 import hmac
 import hashlib
 import requests
-from flask import Flask, request, abort
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # ===== ENV =====
-TOKEN = str(os.environ.get("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A", "")).strip()
-API_URL = "https://api.telegram.org/bot" + TOKEN
 GROUP_ID = int(os.environ.get("-1003587001321", "0"))
-ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
-TRIGGER_SECRET = os.environ.get("TRIGGER_SECRET", "")  # random long string
+TOKEN = os.environ.get("8518103041:AAGwbs3RfKSZRly39cNH-pXEpKlvDAhYW1A", "")
+TRIGGER_SECRET = os.environ.get("shalmanimPoker2026", "")
+API_URL = f"https://api.telegram.org/bot{TOKEN}"
 
-DEFAULT_TIME = "21:00"
+# --- RAM storage (Option 1) ---
+HOSTS = set()  # user_ids who registered as hosts
+HOST_AVAIL = {
+    "WS": {},  # user_id -> set(days)
+    "SU": {},
+}
+# Put your Telegram user id here to allow admin commands like /listhosts
+ADMIN_USER_ID = int(os.environ.get("841949601", "0"))  # set in Render env
 
-# ===== In-memory store (MVP) =====
-# NOTE: On redeploy/restart, memory resets. For MVP OK.
-HOSTS = {}  # host_user_id -> {"name": str}
-# availability: key = f"{week_key()}|{window}" ; value: host_user_id -> set(day_label)
-AVAIL = {}
+# Days per window
+DAYS = {
+    "WS": [("WED", "ד׳"), ("THU", "ה׳"), ("FRI", "ו׳"), ("SAT", "ש׳")],
+    "SU": [("SUN", "א׳"), ("MON", "ב׳"), ("TUE", "ג׳")],
+}
 
-def tg(method: str, payload: dict):
-    return requests.post(f"{API_URL}/{method}", json=payload, timeout=15)
+# ---------- helpers ----------
+def tg_send_message(chat_id: int, text: str, reply_markup=None):
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return requests.post(f"{API_URL}/sendMessage", json=payload, timeout=15)
 
-def week_key():
-    # ISO week key
-    return time.strftime("%G-W%V")
-
-def get_avail_key(window: str):
-    return f"{week_key()}|{window}"
-
-def is_admin(user_id: int) -> bool:
-    return ADMIN_ID != 0 and user_id == ADMIN_ID
-
-def is_group_chat(chat_id: int) -> bool:
-    return chat_id == GROUP_ID
-
-def verify_trigger(req) -> bool:
-    # We require header: X-Trigger-Token = HMAC_SHA256(secret, body)
-    if not TRIGGER_SECRET:
-        return False
-    sig = req.headers.get("X-Trigger-Token", "")
-    body = req.get_data() or b""
-    mac = hmac.new(TRIGGER_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, mac)
-
-def days_for_window(window: str):
-    # WS = Wed-Thu-Fri-Sat, SU = Sun-Mon-Tue
-    if window == "WS":
-        return ["ד׳", "ה׳", "ו׳", "שבת"]
-    if window == "SU":
-        return ["א׳", "ב׳", "ג׳"]
-    return []
-
-def build_days_keyboard(window: str):
-    # Each day button toggles selection; plus Done/Cancel
+def make_inline_days_keyboard(window_key: str, user_id: int):
+    # Each button toggles a day: hostavail|WS|WED
     rows = []
-    for d in days_for_window(window):
-        rows.append([{"text": d, "callback_data": f"DAY|{window}|{d}"}])
-    rows.append([
-        {"text": "✅ סיימתי", "callback_data": f"DONE|{window}"},
-        {"text": "❌ לא יכול השבוע", "callback_data": f"CANCEL|{window}"},
-    ])
+    selected = HOST_AVAIL.get(window_key, {}).get(user_id, set())
+
+    for day_key, day_label in DAYS[window_key]:
+        mark = "✅ " if day_key in selected else ""
+        rows.append([{
+            "text": f"{mark}{day_label}",
+            "callback_data": f"hostavail|{window_key}|{day_key}"
+        }])
+
+    # Done button
+    rows.append([{
+        "text": "סיימתי",
+        "callback_data": f"hostdone|{window_key}"
+    }])
+
     return {"inline_keyboard": rows}
 
-def host_prompt_text(host_name: str, window: str):
-    if window == "WS":
-        win_text = "רביעי–שבת"
-    else:
-        win_text = "ראשון–שלישי"
-    return (
-        f"שלום {host_name} 👋\n"
-        f"האם אתה יכול לארח השבוע? ({win_text})\n"
-        f"שעה ברירת מחדל: {DEFAULT_TIME}\n"
-        f"בחר ימים בכפתורים למטה:"
-    )
+def verify_trigger(req) -> bool:
+    """
+    Verify X-Trigger-Token = HMAC_SHA256(secret, body="{}")
+    This matches the GitHub Action we set (body is "{}").
+    """
+    if not TRIGGER_SECRET:
+        return False
 
+    sig = req.headers.get("X-Trigger-Token", "")
+    raw = req.get_data()  # bytes
+    expected = hmac.new(TRIGGER_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+def is_private_chat(update: dict) -> bool:
+    try:
+        return update["message"]["chat"]["type"] == "private"
+    except Exception:
+        return False
+
+# ---------- web routes ----------
 @app.get("/")
 def health():
-    return "OK"
+    return "OK", 200
 
 @app.post("/webhook")
 def webhook():
     update = request.get_json(force=True, silent=True) or {}
     print("UPDATE:", update)
 
-    # 1) Handle callback_query (button presses)
+    # Handle callback buttons
     if "callback_query" in update:
-        cq = update["callback_query"]
-        data = cq.get("data", "")
-        cb_id = cq.get("id")
-        from_user = cq.get("from", {}) or {}
-        user_id = int(from_user.get("id", 0))
+        cb = update["callback_query"]
+        data = cb.get("data", "")
+        from_user = cb.get("from", {})
+        user_id = from_user.get("id")
+
+        # Answer callback (prevents loading spinner)
+        cb_id = cb.get("id")
+        if cb_id:
+            requests.post(f"{API_URL}/answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=10)
 
         if not user_id:
-            tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": "שגיאה"})
             return "OK", 200
 
-        # Parse
-        # DAY|WS|ד׳
-        # DONE|WS
-        # CANCEL|WS
         parts = data.split("|")
-        action = parts[0] if parts else ""
-        window = parts[1] if len(parts) >= 2 else ""
-        key = get_avail_key(window)
-
-        # init
-        AVAIL.setdefault(key, {})
-        AVAIL[key].setdefault(user_id, set())
-
-        if action == "DAY" and len(parts) == 3:
-            day = parts[2]
-            AVAIL[key][user_id].add(day)
-            tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": f"נרשם: {day}"})
+        if len(parts) >= 2 and parts[0] == "hostdone":
+            window_key = parts[1]
+            chosen = sorted(list(HOST_AVAIL.get(window_key, {}).get(user_id, set())))
+            chosen_txt = ", ".join(chosen) if chosen else "לא נבחר כלום"
+            tg_send_message(user_id, f"נרשם! ({window_key}) ימים שבחרת: {chosen_txt}")
             return "OK", 200
 
-        if action == "CANCEL":
-            # clear selections
-            AVAIL[key][user_id] = set()
-            tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": "סומן: לא יכול השבוע"})
+        if len(parts) == 3 and parts[0] == "hostavail":
+            window_key, day_key = parts[1], parts[2]
+            if window_key in HOST_AVAIL:
+                user_set = HOST_AVAIL[window_key].setdefault(user_id, set())
+                if day_key in user_set:
+                    user_set.remove(day_key)
+                else:
+                    user_set.add(day_key)
+
+                # Edit message markup to reflect ✅
+                msg = cb.get("message", {})
+                chat_id = msg.get("chat", {}).get("id")
+                message_id = msg.get("message_id")
+                if chat_id and message_id:
+                    reply_markup = make_inline_days_keyboard(window_key, user_id)
+                    requests.post(
+                        f"{API_URL}/editMessageReplyMarkup",
+                        json={"chat_id": chat_id, "message_id": message_id, "reply_markup": reply_markup},
+                        timeout=15
+                    )
             return "OK", 200
 
-        if action == "DONE":
-            chosen = sorted(list(AVAIL[key][user_id]))
-            msg = "קיבלתי 🙏 ימים שנבחרו: " + (", ".join(chosen) if chosen else "—")
-            # Notify user in private (callback message has chat_id, but easiest: send to user_id)
-            tg("sendMessage", {"chat_id": user_id, "text": msg})
-            tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": "תודה!"})
-            return "OK", 200
-
-        tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": "לא זוהה"})
         return "OK", 200
 
-    # 2) Handle normal messages
+    # Handle text messages (commands)
     if "message" in update and "text" in update["message"]:
-        msg = update["message"]
-        chat = msg.get("chat", {})
-        chat_id = int(chat.get("id", 0))
-        chat_type = chat.get("type", "")
-        text = (msg.get("text") or "").strip()
+        chat = update["message"]["chat"]
+        chat_id = chat["id"]
+        chat_type = chat.get("type")
+        text = update["message"]["text"].strip()
+        user_id = update["message"].get("from", {}).get("id")
 
-        from_user = msg.get("from", {}) or {}
-        user_id = int(from_user.get("id", 0))
-        full_name = ((from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()
-                     or from_user.get("first_name", "") or "חבר")
-
-        # /start in private: just welcome
-        if text == "/start" and chat_type == "private":
-            tg("sendMessage", {"chat_id": chat_id, "text": "היי! כדי להירשם כמארח, תן לאדמין לעשות Forward של הודעה שלך לבוט."})
+        # Basic ping in group (optional)
+        if text == "/ping" and chat_type != "private":
+            tg_send_message(chat_id, "🏓 pong (בקבוצה)")
             return "OK", 200
 
-        # /whoami
-        if text == "/whoami":
-            tg("sendMessage", {"chat_id": chat_id, "text": f"user_id שלך: {user_id}"})
-            return "OK", 200
+        # Commands in private
+        if chat_type == "private":
+            if text == "/addhost":
+                if user_id:
+                    HOSTS.add(int(user_id))
+                    tg_send_message(chat_id, "✅ נרשמת כמארח! (זמני – עד ריסט של השרת)")
+                return "OK", 200
 
-        # Admin flow: add host by forwarding any message from them (in private)
-        if chat_type == "private" and is_admin(user_id) and "forward_from" in msg:
-            f = msg["forward_from"]
-            hid = int(f.get("id", 0))
-            hn = ((f.get("first_name", "") + " " + f.get("last_name", "")).strip()
-                  or f.get("first_name", "") or "מארח")
-            if hid:
-                HOSTS[hid] = {"name": hn}
-                tg("sendMessage", {"chat_id": chat_id, "text": f"✅ נוסף מארח: {hn} (id={hid})"})
-            return "OK", 200
+            if text == "/myhost":
+                ws = sorted(list(HOST_AVAIL["WS"].get(int(user_id), set()))) if user_id else []
+                su = sorted(list(HOST_AVAIL["SU"].get(int(user_id), set()))) if user_id else []
+                tg_send_message(chat_id, f"WS: {ws or '—'}\nSU: {su or '—'}")
+                return "OK", 200
 
-        # Admin commands (private)
-        if chat_type == "private" and is_admin(user_id):
             if text == "/listhosts":
-                if not HOSTS:
-                    tg("sendMessage", {"chat_id": chat_id, "text": "אין מארחים עדיין. Forward הודעה ממארח לבוט כדי להוסיף."})
+                if ADMIN_USER_ID and user_id == ADMIN_USER_ID:
+                    tg_send_message(chat_id, f"HOSTS ({len(HOSTS)}): {sorted(list(HOSTS))}")
                 else:
-                    lines = [f"- {meta['name']} (id={hid})" for hid, meta in HOSTS.items()]
-                    tg("sendMessage", {"chat_id": chat_id, "text": "מארחים:\n" + "\n".join(lines)})
+                    tg_send_message(chat_id, "⛔ אין הרשאה")
                 return "OK", 200
-
-            if text in ("/ask_ws", "/ask_su"):
-                window = "WS" if text == "/ask_ws" else "SU"
-                sent = send_host_prompts(window)
-                tg("sendMessage", {"chat_id": chat_id, "text": f"נשלח למארחים. חלון {window}. נשלח ל-{sent} מארחים."})
-                return "OK", 200
-
-            if text in ("/poll_ws", "/poll_su"):
-                window = "WS" if text == "/poll_ws" else "SU"
-                ok = post_group_poll(window)
-                tg("sendMessage", {"chat_id": chat_id, "text": "✅ סקר פורסם בקבוצה" if ok else "לא היה מה לפרסם (אין הצעות מארחים)"} )
-                return "OK", 200
-
-        # Group ping test
-        if text == "/ping" and is_group_chat(chat_id):
-            tg("sendMessage", {"chat_id": chat_id, "text": "🏓 pong"})
-            return "OK", 200
 
     return "OK", 200
 
-def send_host_prompts(window: str) -> int:
-    if not HOSTS:
-        return 0
-    kb = build_days_keyboard(window)
-    count = 0
-    for hid, meta in HOSTS.items():
-        tg("sendMessage", {
-            "chat_id": hid,
-            "text": host_prompt_text(meta["name"], window),
-            "reply_markup": kb
-        })
-        count += 1
-    return count
 
-def build_options_from_avail(window: str):
-    key = get_avail_key(window)
-    if key not in AVAIL:
-        return []
-    options = []
-    for hid, days in AVAIL[key].items():
-        if not days:
-            continue
-        host_name = HOSTS.get(hid, {}).get("name", f"Host {hid}")
-        for d in sorted(days):
-            options.append(f"{d} {DEFAULT_TIME} – {host_name}")
-    # Telegram poll allows 2–10 options
-    return options[:10]
+# --- Triggers from GitHub Actions ---
+@app.post("/trigger/ask/<window_key>")
+def trigger_ask(window_key: str):
+    # window_key is WS or SU
+    if window_key not in ("WS", "SU"):
+        return jsonify({"ok": False, "error": "bad_window"}), 400
 
-def post_group_poll(window: str) -> bool:
-    options = build_options_from_avail(window)
-    if len(options) < 2:
-        return False
-
-    question = "מי יכול להגיע למשחק הקרוב? (אפשר לבחור כמה)"  # multi choice
-    tg("sendPoll", {
-        "chat_id": GROUP_ID,
-        "question": question,
-        "options": options,
-        "is_anonymous": False,
-        "allows_multiple_answers": True
-    })
-    return True
-
-# ===== Trigger endpoints for GitHub Actions =====
-
-@app.post("/trigger/ask/<window>")
-def trigger_ask(window: str):
     if not verify_trigger(request):
-        abort(403)
-    window = window.upper()
-    if window not in ("WS", "SU"):
-        abort(400)
-    send_host_prompts(window)
-    return "OK"
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-@app.post("/trigger/poll/<window>")
-def trigger_poll(window: str):
-    if not verify_trigger(request):
-        abort(403)
-    window = window.upper()
-    if window not in ("WS", "SU"):
-        abort(400)
-    post_group_poll(window)
-    return "OK"
+    # send DM to all hosts
+    sent = 0
+    for uid in list(HOSTS):
+        kb = make_inline_days_keyboard(window_key, uid)
+        tg_send_message(uid, f"🃏 מי יכול לארח השבוע? (חלון {window_key})\nבחר ימים:", reply_markup=kb)
+        sent += 1
+        time.sleep(0.1)  # small throttle
+
+    return jsonify({"ok": True, "sent": sent}), 200
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
