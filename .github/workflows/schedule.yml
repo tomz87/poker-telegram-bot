@@ -34,7 +34,7 @@ jobs:
           body="{}"
           sig=$(python - << 'PY'
           import os, hmac, hashlib
-          secret=os.environ["SECRET"].encode()
+          secret=os.environ["shalmanimPoker2026"].encode()
           body=b"{}"
           print(hmac.new(secret, body, hashlib.sha256).hexdigest())
           PY
